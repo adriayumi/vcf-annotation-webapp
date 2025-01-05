@@ -1,0 +1,17 @@
+[project]
+authors = ["Adrielle Ayumi de Vasconcelos <adriayumi@gmail.com>"]
+channels = ["conda-forge", "bioconda"]
+name = "generate-database"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.12.8,<3.13"
+snakemake-minimal = ">=8.26.0,<9"
+bcftools = ">=1.21,<2"
+transanno = ">=0.4.5,<0.5"
+minimap2 = ">=2.28,<3"
+samtools = ">=1.21,<2"
+bedops = ">=2.4.41,<3"

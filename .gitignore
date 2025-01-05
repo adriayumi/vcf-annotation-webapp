@@ -1,0 +1,12 @@
+# Snakemake directory
+.snakemake/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# Mac/OSX
+.DS_Store
+
+# Pixi environments
+.pixi/
+*.egg-info

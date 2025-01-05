@@ -1,0 +1,213 @@
+rule all:
+    input:
+        "NIST.dbsnp151.snpeff.alfa3.db",
+
+
+rule bgzip:
+    input:
+        "{prefix}.{ext}",
+    output:
+        "{prefix}.{ext}.gz",
+    wildcard_constraints:
+        ext="bed|vcf",
+    log:
+        stderr="logs/bgzip_{prefix}_{ext}.stderr",
+    shell:
+        """
+        bgzip --keep -o {output} {input} 2> {log.stderr}
+        """
+
+
+rule samtools_faidx:
+    input:
+        "{prefix}.fa",
+    output:
+        temp("{prefix}.fa.fai"),
+    log:
+        stderr="logs/samtools_faidx_{prefix}.stderr",
+    shell:
+        """
+        samtools faidx -o {output} {input} 2> {log.stderr}
+        """
+
+
+rule tabix:
+    input:
+        "{prefix}.{ext}.gz",
+    output:
+        temp("{prefix}.{ext}.gz.tbi"),
+    wildcard_constraints:
+        ext="bed|vcf",
+    log:
+        stderr="logs/tabix_{prefix}_{ext}.stderr",
+    shell:
+        """
+        tabix -p {wildcards.ext} {input} 2> {log.stderr}
+        """
+
+
+rule create_paf:
+    input:
+        genome1="{dest}.fa",
+        genome2="{source}.fa",
+    output:
+        temp("{source}_{dest}.paf"),
+    log:
+        stderr="logs/create_paf_{source}_{dest}.stderr",
+    threads: 16
+    shell:
+        """
+        minimap2 -t {threads} -cx asm5 --cs -o {output} {input.genome1} {input.genome2} \
+        2> {log.stderr}
+        """
+
+
+rule transanno_minimap2chain:
+    input:
+        "{source}_{dest}.paf",
+    output:
+        "{source}_{dest}.chain",
+    log:
+        stderr="logs/transanno_minimap2chain_{source}_{dest}.stderr",
+    shell:
+        """
+        transanno minimap2chain -o {output} {input} 2> {log.stderr}
+        """
+
+
+rule transanno_liftvcf_grch37_to_hg38:
+    input:
+        vcf="{prefix}.vcf.gz",
+        chain="GRCh37_hg38.chain",
+        ref="GRCh37.fa",
+        query="hg38.fa",
+        ref_fai="GRCh37.fa.fai",
+        query_fai="hg38.fa.fai",
+    output:
+        rejected_vcf=temp("liftvcf_{prefix}_hg38_rejected.vcf"),
+        unsorted_lifted_vcf=temp("{prefix}.hg38.unsorted.vcf"),
+        sorted_lifted_vcf="{prefix}.hg38.vcf",
+    log:
+        stderr="logs/transanno_liftvcf_grch37_to_hg38_{prefix}.stderr",
+    shell:
+        """
+        transanno liftvcf -m -r {input.ref} -q {input.query} -c {input.chain} -v {input.vcf} \
+        -o {output.unsorted_lifted_vcf} --fail {output.rejected_vcf} 2> {log.stderr}
+        bcftools sort -o {output.sorted_lifted_vcf} {output.unsorted_lifted_vcf} 2>> {log.stderr}
+        """
+
+
+rule annotate_dbsnp:
+    input:
+        vcf="{prefix}.hg38.vcf.gz",
+        tbi="{prefix}.hg38.vcf.gz.tbi",
+        dbsnp="hg38.dbsnp{dbsnp_version}.vcf.gz",
+        dbsnp_tbi="hg38.dbsnp{dbsnp_version}.vcf.gz.tbi",
+    output:
+        temp("{prefix}.dbsnp{dbsnp_version}.hg38.vcf"),
+    log:
+        stderr="logs/annotate_dbsnp{dbsnp_version}_{prefix}.stderr",
+    shell:
+        """
+        bcftools annotate -o {output} -c ID -a {input.dbsnp} {input.vcf} 2> {log.stderr}
+        """
+
+
+rule snpeff:
+    input:
+        vcf="{prefix}.hg38.vcf.gz",
+        db="snpeff_data/hg38",
+    output:
+        "{prefix}.snpeff.hg38.vcf",
+    log:
+        stderr="logs/snpeff_{prefix}.stderr",
+    shell:
+        """
+        snpEff -Xmx8g -v -no-upstream -no-downstream -no-intergenic -dataDir $(dirname {input.db}) \
+        -noStats $(basename {input.db}) {input.vcf} > {output} 2> {log.stderr}
+        """
+
+
+rule variants_to_table:
+    input:
+        "{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.vcf.gz",
+    output:
+        "{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.tsv",
+    log:
+        stderr="logs/variants_to_table_{prefix}_dbsnp{dbsnp_version}.stderr",
+    shell:
+        """
+        {{
+            bcftools query -HH -f '%ID\t%CHROM\t%POS\t%REF\t%ALT\t%QUAL\t%FILTER[\t%GT\t%DP\t%AD]' {input} | \
+            awk -v OFS="\t" 'NR==1 {{sub(/^#/, ""); for(i=1; i<=NF; i++) sub(/.*:/, "", $i)}} {{print}}' > {output}
+        }} 2> {log.stderr}
+        """
+
+
+rule genes_to_table:
+    input:
+        "{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.vcf.gz",
+    output:
+        "{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.genes.tsv",
+    log:
+        stderr="logs/genes_to_table_{prefix}_dbsnp{dbsnp_version}.stderr",
+    shell:
+        """
+        {{
+            SnpSift extractFields -s "," {input} CHROM POS "ANN[*].GENE" | awk -v OFS="\t" \
+            'NR==1 {{$3="GENE"; print; next}} {{
+                split($3, arr, ",")
+                delete seen
+                for (i in arr) {{
+                    if (!(arr[i] in seen)) {{ seen[arr[i]] = 1; print $1, $2, arr[i] }}
+                }}
+            }}' > {output}
+        }} 2> {log.stderr}
+        """
+
+
+rule alfa_to_table:
+    input:
+        sample_vcf="{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.vcf.gz",
+        alfa_vcf="alfa{alfa_version}.vcf.gz",
+    output:
+        "{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.alfa{alfa_version}.tsv",
+    log:
+        stderr="logs/genes_to_table_{prefix}_dbsnp{dbsnp_version}_alfa{alfa_version}.stderr",
+    shell:
+        """
+        {{
+            bcftools query -f '%ID\n' {input.sample_vcf} | \
+            bcftools view -i 'ID=@-' {input.alfa_vcf} | \
+            bcftools query -HH -i 'ID!="."' -f '%ID[\t%AN\t%AC]' | awk -v OFS="\t" '
+                NR==1 {{
+                    sub(/^#/, "")
+                    gsub(/:/, "_")
+                    print $0
+                    next
+                }} {{ for(i=1; i<=NF; i++) {{
+                        if(index($i, ",") > 0) {{
+                            split($i, arr, ",");
+                            sum = 0;
+                            for(j in arr) {{
+                                sum += arr[j];
+                            }}
+                        $i = sum;
+                    }}
+                }} {{print}}
+            }}' > {output}
+        }} 2> {log.stderr}
+        """
+
+
+rule create_database:
+    input:
+        variants_tsv="{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.tsv",
+        genes_tsv="{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.genes.tsv",
+        alfa_tsv="{prefix}.dbsnp{dbsnp_version}.snpeff.hg38.alfa{alfa_version}.tsv",
+    output:
+        "{prefix}.dbsnp{dbsnp_version}.snpeff.alfa{alfa_version}.db",
+    log:
+        stderr="logs/create_database_{prefix}_dbsnp{dbsnp_version}_alfa{alfa_version}.stderr",
+    script:
+        "scripts/create-database.sh"
