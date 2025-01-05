@@ -1,4 +1,4 @@
-# Pipeline para anotação de variantes (VCF) e webapp interativa com resultado
+# Pipeline para anotação de variantes (VCF) e web app interativo com resultado
 
 <details>
   <summary>Screenshots do web app</summary>
